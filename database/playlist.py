@@ -6,7 +6,8 @@ from database.common import *
 
 
 class SongUriProcessor(DBSongUtil):
-    def __init__(self, credit_cap, uris, *, reverse=False):
+    def __init__(self, database, credit_cap, uris, *, reverse=False):
+        self._database = database
         self._credit_cap = credit_cap
         self._uris = deque(uris)
         self._reverse = reverse
@@ -32,9 +33,13 @@ class SongUriProcessor(DBSongUtil):
                 duration = int(result['duration'])
             except (KeyError, ValueError) as e:
                 raise RuntimeError('Failed to extract song duration') from e
-            song, created = Song.create_or_get(uuri=song_uuri, title=title,
-                                               last_played=datetime.utcfromtimestamp(0),
-                                               duration=duration, credit_count=self._credit_cap)
+            # since the song may be about to be added multiple times, check again and insert atomically
+            with self._database.atomic():
+                try:
+                    song = Song.create(uuri=song_uuri, title=title, last_played=datetime.utcfromtimestamp(0),
+                                       duration=duration, credit_count=self._credit_cap)
+                except peewee.IntegrityError:
+                    song = Song.get(Song.uuri == song_uuri)
         return song
 
     def __next__(self):
@@ -46,7 +51,7 @@ class SongUriProcessor(DBSongUtil):
         # check if song id
         if uri.isdigit():
             try:
-                return Song.get(id=int(uri))
+                return Song.get(Song.id == int(uri))
             except Song.DoesNotExist as e:
                 raise RuntimeError('Song [{}] cannot be found in the database'.format(uri)) from e
         # it can be a list otherwise
@@ -121,7 +126,7 @@ class PlaylistInterface(DBInterface, DBPlaylistUtil):
             # if it's ok, create new playlist, integrity error means a playlist with the same name already exists
             try:
                 Playlist.create(user=user_id, name=playlist_name)
-            except Playlist.IntegrityError as e:
+            except peewee.IntegrityError as e:
                 raise ValueError('You already have a playlist with the chosen name'.format(playlist_name)) from e
 
     @in_executor
@@ -188,7 +193,7 @@ class PlaylistInterface(DBInterface, DBPlaylistUtil):
     @in_executor
     def repeat(self, user_id, repeat, playlist_name):
         with self._database.atomic():
-            playlist = self._get_playlist(user_id, playlist_name)
+            playlist, created = self._get_playlist_ex(user_id, playlist_name=playlist_name)
             Playlist.update(repeat=repeat).where(Playlist.id == playlist.id).execute()
 
         return playlist.name
@@ -204,7 +209,7 @@ class PlaylistInterface(DBInterface, DBPlaylistUtil):
             messages.append('Since you haven\'t had any playlist, a *default* one was created for you. Note that songs '
                             'will be removed from it after playing.')
         # construct some iterator object from uris
-        song_list = SongUriProcessor(self._config_op_credit_cap, uris, reverse=prepend)
+        song_list = SongUriProcessor(self._database, self._config_op_credit_cap, uris, reverse=prepend)
 
         # compose "already present message"
         present_message = 'The song [{}] {} was already present in your playlist.'
@@ -238,6 +243,7 @@ class PlaylistInterface(DBInterface, DBPlaylistUtil):
             except Exception as e:
                 # either reached the limit, or the playlist does not exist anymore -- either case we end return
                 messages.append(str(e))
+                failed += 1
                 return playlist.name, inserted, failed, True, messages
 
     @in_executor
@@ -260,7 +266,7 @@ class PlaylistInterface(DBInterface, DBPlaylistUtil):
             # update the playlist head
             Playlist.update(head=current_link).where(Playlist.id == playlist.id).execute()
 
-        return playlist_name, deleted
+        return playlist.name, deleted
 
     @in_executor
     def pop_id(self, user_id, song_id, playlist_name):
@@ -291,47 +297,49 @@ class PlaylistInterface(DBInterface, DBPlaylistUtil):
     # Internally used methods
     #
     def _append_song(self, user_id, song_id, playlist_name):
-        try:
-            with self._database.atomic():
-                # check for the song count limit
+        with self._database.atomic():
+            # get a playlist
+            playlist = self._get_playlist(user_id, playlist_name)
+
+            # check for duplicates, if present just return
+            if Link.select().where(Link.playlist == playlist.id, Link.song == song_id).count():
+                return False
+            # check for the song count limit
+            count = Link.select().join(Playlist, on=(Link.playlist == Playlist.id)).where(Playlist.user == user_id) \
+                .count()
+            if count >= self._config_max_songs:
+                raise RuntimeError('You\'ve reached the song count limit for your playlists')
+            # insert a new link
+            link = Link.create(playlist=playlist.id, song=song_id, next=None)
+            # modify the previous link to point to the new one
+            if playlist.head_id is None:
+                Playlist.update(head=link.id).where(Playlist.id == playlist.id).execute()
+            else:
+                Link.update(next=link.id).where(Link.playlist == playlist.id,
+                                                Link.next >> None, Link.id != link.id).execute()
+            return True
+
+    def _prepend_song(self, user_id, song_id, playlist_name):
+        with self._database.atomic():
+            # get a playlist
+            playlist = self._get_playlist(user_id, playlist_name)
+
+            try:
+                # if there is a duplicate, we won't insert a new link
+                duplicate = Link.get(Link.playlist == playlist.id, Link.song == song_id)
+                # we will reuse the link and push it to the front
+                if Link.update(next=duplicate.next_id).where(Link.next == duplicate.id).execute():
+                    # we are not the first link if the statement above modified something
+                    Link.update(next=playlist.head_id).where(Link.id == duplicate.id).execute()
+                    Playlist.update(head=duplicate.id).where(Playlist.id == playlist.id).execute()
+                return False
+            except Link.DoesNotExist:  # can be only raised by the previous Link.get()
+                # do the "normal insert" -- we need to check for length in this case
                 count = Link.select().join(Playlist, on=(Link.playlist == Playlist.id)) \
                     .where(Playlist.user == user_id).count()
                 if count >= self._config_max_songs:
                     raise RuntimeError('You\'ve reached the song count limit for your playlists')
 
-                # get a playlist and insert a new link at the end
-                playlist = self._get_playlist(user_id, playlist_name)
-                link = Link.create(playlist=playlist.id, song=song_id, next=None)
-                # modify a previous link
-                if playlist.head_id is None:
-                    Playlist.update(head=link.id).where(Playlist.id == playlist.id).execute()
-                else:
-                    Link.update(next=link.id).where(Link.playlist == playlist.id,
-                                                    Link.next >> None, Link.id != link.id).execute()
-        except peewee.IntegrityError:
-            return False
-        return True
-
-    def _prepend_song(self, user_id, song_id, playlist_name):
-        inserted = False
-        with self._database.atomic():
-            count = Link.select().join(Playlist, on=(Link.playlist == Playlist.id)).where(Playlist.user == user_id) \
-                .count()
-            if count >= self._config_max_songs:
-                raise RuntimeError('You\'ve reached the song count limit for your playlists')
-
-            playlist = self._get_playlist(user_id, playlist_name)
-
-            try:
-                duplicate = Link.get(Link.playlist == playlist.id, Link.song == song_id)
-                # we will reuse the link and push it to the front
-                Link.update(next=duplicate.next_id).where(Link.playlist == playlist.id, Link.next == duplicate.id) \
-                    .execute()
-                Link.update(next=playlist.head_id).where(Link.id == duplicate.id).execute()
-                Playlist.update(head=duplicate.id).where(Playlist.id == playlist.id).execute()
-            except Link.DoesNotExist:
-                # do the "normal insert"
-                inserted = True
                 link = Link.create(playlist=playlist.id, song=song_id, next=playlist.head_id)
                 Playlist.update(head=link.id).where(Playlist.id == playlist.id).execute()
-        return inserted
+                return True
