@@ -8,3 +8,6 @@
 out
 gen
 /.venv/
+*.sqlite*
+.python-version
+*.log*
