@@ -49,6 +49,7 @@ class UserManager:
         self._lock = asyncio.Lock(loop=bot.loop)
 
         self._tokens = dict()  # maps token (string) -> (timestamp, user)
+        self._multi_user_tokens = dict()
         self._listeners = dict()  # maps discord_id (int) -> ListenerInfo
         self._queue = collections.deque()
 
@@ -69,9 +70,11 @@ class UserManager:
     async def get_token_owner(self, token):
         async with self._lock:
             # check if token is valid
-            if token not in self._tokens:
+            if token not in self._tokens and token not in self._multi_user_tokens:
                 log.debug('Token {} verification failed'.format(token))
                 return None
+            if token in self._multi_user_tokens:
+                return self
             timestamp, user = self._tokens[token]
             # only one connection is possible at the time
             if user in self._listeners and not self._listeners[user].is_direct and self._bot.direct is None:
@@ -194,7 +197,19 @@ class UserManager:
             self._tokens[token] = (current_time, discord_id)
             return token
 
-    #
+    async def generate_multi_user_token(self):
+        """Generates a multi user token, they don't expire and aren't connected to any user."""
+        current_time = datetime.datetime.now()
+        token = ''.join(random.SystemRandom().choice(string.ascii_letters + string.digits) for _ in range(64))
+        async with self._lock:
+            # key collisions are possible, but should be negligible
+            log.debug('Added multi user token {}'.format(token))
+            self._multi_user_tokens[token] = (current_time)
+            return token
+
+    async def is_multi_user_token(self, token):
+        return token in self._multi_user_tokens
+
     # API for activity update
     #
     async def refresh_activity(self, discord_id):

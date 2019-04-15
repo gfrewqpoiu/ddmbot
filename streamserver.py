@@ -251,7 +251,8 @@ class StreamServer:
         # check for the token validity
         token = request.query_string[6:]
         user = await self._bot.users.get_token_owner(token)
-        if not request.query_string.startswith('token=') or user is None:
+        is_multiuser = await self._bot.users.is_multi_user_token(token)
+        if not request.query_string.startswith('token=') or (user is None and not is_multiuser):
             response = web.Response(status=403)
             response.force_close()
             return response
@@ -293,17 +294,21 @@ class StreamServer:
                 self._connected.set()
                 self._aac_thread.start()
 
-            elif user in self._connections:
+            elif user in self._connection and not is_multiuser:
                 # break the existing connection
                 log.debug('Previous connection for user {} found, signalling to terminate'.format(user))
                 self._connections[user].terminate()
 
             # add the connection object to the _connections dictionary
-            self._connections[user] = connection
+            if not is_multiuser:
+                self._connections[user] = connection
 
         # notify the UserManager that a new listener was added
         # race condition is possible, but only one of the connections will be served
-        await self._bot.users.add_listener(user, direct=True)
+        if not is_multiuser:
+            await self._bot.users.add_listener(user, direct=True)
+        else:
+            await self._bot.users.add_listener(None, direct=True)
 
         # wait before terminating
         log.debug('Waiting for the client termination')
