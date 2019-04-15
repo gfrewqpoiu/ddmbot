@@ -8,6 +8,8 @@ verify_ssl = true
 [packages]
 peewee = "==2.10.2"
 pynacl = "*"
+youtube-dl = "*"
+discord-py = "==0.16.12"
 
 [requires]
 python_version = "3.6"

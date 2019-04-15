@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "a0ef5ecf3f43952b34ec87ff19b04c1917b26bfaad427dbd83a40519befdfbe6"
+            "sha256": "cd2437ed42a1312188974c4421050e5936d6cfd973cc63b62aab929ffdf9b1d6"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -58,7 +58,6 @@
         },
         "pycparser": {
             "hashes": [
-                "sha256:08fb9d62d102dd6756cae4c014733e09d75648037b269ed74b000fddacc5576d",
                 "sha256:a988718abfad80b6b157acce7bf130a30876d27603738ac39f140993246b25b3"
             ],
             "version": "==2.19"
@@ -94,6 +93,14 @@
                 "sha256:d16a0141ec1a18405cd4ce8b4613101da75da0e9a7aec5bdd4fa804d0e0eba73"
             ],
             "version": "==1.12.0"
+        },
+        "youtube-dl": {
+            "hashes": [
+                "sha256:01c3feff562ff85d8b650af7c86c00104c2d33d7fe528186d142479a73657884",
+                "sha256:d8250c9fedea3bcf5c2df62012e9814c96db53540a2842b8f8345885adfd0a85"
+            ],
+            "index": "pypi",
+            "version": "==2019.4.7"
         }
     },
     "develop": {}
