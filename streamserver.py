@@ -294,7 +294,7 @@ class StreamServer:
                 self._connected.set()
                 self._aac_thread.start()
 
-            elif user in self._connection and not is_multiuser:
+            elif user in self._connections and not is_multiuser:
                 # break the existing connection
                 log.debug('Previous connection for user {} found, signalling to terminate'.format(user))
                 self._connections[user].terminate()
