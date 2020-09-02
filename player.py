@@ -32,7 +32,7 @@ class PcmProcessor(threading.Thread):
         config = bot.config['ddmbot']
 
         pipe_size = int(config['pcm_pipe_size'])
-        if pipe_size > 2**31 or pipe_size <= 0:
+        if pipe_size > 2 ** 31 or pipe_size <= 0:
             raise ValueError('Provided \'pcm_pipe_size\' is invalid')
 
         if not callable(next_callback):
@@ -41,8 +41,9 @@ class PcmProcessor(threading.Thread):
         super().__init__()
 
         # despite the fact we expect voice_client to change, encoder parameters should be static
-        self._frame_len = bot.voice.encoder.frame_size
-        self._frame_period = bot.voice.encoder.frame_length / 1000.0
+        # grabbed these from the old discord opus.py
+        self._frame_len = 3840  # was encoder.frame_size
+        self._frame_period = 20 / 1000.0  # was encoder.frame_length / 1000.0
         self._volume = int(config['default_volume']) / 100
 
         self._in_pipe_fd = os.open(config['pcm_pipe'], os.O_RDONLY | os.O_NONBLOCK)
@@ -67,21 +68,23 @@ class PcmProcessor(threading.Thread):
     def volume(self, value):
         self._volume = min(max(value, 0.0), 2.0)
 
-    def stop(self):
+    def stop(self) -> None:
         self._end.set()
         self.join()
         self.flush()
         os.close(self._in_pipe_fd)
         os.close(self._out_pipe_fd)
 
-    def flush(self):
+    def flush(self) -> None:
+        """Clears out the pipes from all audio data."""
         try:
             os.read(self._in_pipe_fd, 1048576)
         except OSError as e:
             if e.errno != errno.EAGAIN:
                 raise
 
-    def run(self):
+    def run(self) -> None:
+        """Actually plays the music."""
         loops = 0  # loop counter
         next_called = True  # variable to prevent constant calling of self._next()
         output_congestion = False  # to control log spam
@@ -131,6 +134,7 @@ class PcmProcessor(threading.Thread):
                         raise
 
             # now we try to pass data to the output, if connected, we also send the silence (zero_data)
+            # This section is responsible for the direct stream.
             if self._bot.stream.is_connected():
                 try:
                     os.write(self._out_pipe_fd, data)
@@ -151,10 +155,12 @@ class PcmProcessor(threading.Thread):
             # and last but not least, discord output, this time, we can (should) omit partial frames or zero data
             voice_client = self._bot.voice
             if voice_client.is_connected() and data_len == self._frame_len:
+                if not discord.opus.is_loaded():
+                    raise EnvironmentError("Discord OPUS Library wan't loaded.")
                 # adjust the volume
                 data = audioop.mul(data, 2, self._volume)
                 # call the callback
-                voice_client.play_audio(data)
+                voice_client.send_audio_packet(data)
 
             # calculate next transmission time
             next_time = start_time + self._frame_period * loops
@@ -205,8 +211,10 @@ class Player:
         # create PCM thread
         self._pcm_thread = PcmProcessor(self._bot, self._playback_ended_callback)
         self._ffmpeg_command = 'ffmpeg -reconnect 1 -reconnect_delay_max 3 -loglevel error' \
-                               ' -i {{}} -y -vn -f s16le -ar {} -ac {} {}'.format(bot.voice.encoder.sampling_rate,
-            bot.voice.encoder.channels, shlex.quote(bot.config['ddmbot']['pcm_pipe']))
+                               ' -i {{}} -y -vn -f s16le -ar {} -ac {} {}'.format(48000,
+                                                                                  2,
+                                                                                  shlex.quote(
+                                                                                      bot.config['ddmbot']['pcm_pipe']))
 
         # database interface
         self._database = PlayerInterface(bot.loop, bot.config['ddmbot'])
@@ -425,18 +433,18 @@ class Player:
             new_status_message = '**Playing stream:** {}\n**Direct listeners** ({}/{})**:** {}' \
                 .format(self._stream_title, len(direct_listeners), listener_count, dls_str)
             new_stream_title = self._stream_title
-            await self._bot.client.change_presence(game=discord.Game(
-                name="a stream for {} listener(s)".format(listener_count)))
+            await self._bot.client.change_presence(activity=discord.Game(
+                name="music for {} listener(s)".format(listener_count)))
 
         elif self.waiting:
             new_status_message = '**Waiting for the first listener**'
             new_stream_title = 'Hold on a second...'
-            await self._bot.client.change_presence(game=discord.Game(name="a waiting game :("))
+            await self._bot.client.change_presence(activity=discord.Game(name="a waiting game :("))
 
         elif self.cooldown:
             new_status_message = '**Waiting for DJs**, automatic playlist will be initiated in a few seconds'
             new_stream_title = 'Waiting for DJs'
-            await self._bot.client.change_presence(game=discord.Game(name="with a countdown clock"))
+            await self._bot.client.change_presence(activity=discord.Game(name="with a countdown clock"))
 
         elif self.playing:
             # assemble the rest of the information
@@ -455,15 +463,15 @@ class Player:
             queued_by = '' if self._song_context.dj_id is None else ', queued by {}'.format(
                 names[self._song_context.dj_id])
             new_stream_title = '{}{}'.format(self._song_context.song_title, queued_by)
-            await self._bot.client.change_presence(game=discord.Game(
+            await self._bot.client.change_presence(activity=discord.Game(
                 name="songs from DJ queue for {} listener(s)".format(listener_count)))
 
         # Now that new_status_message and new_stream_title is put together, update them
         if self._status_message:
-            self._status_message = await self._bot.client.edit_message(self._status_message, new_status_message)
+            await self._status_message.edit(content=new_status_message)
             log.debug("Status message updated")
         else:
-            self._status_message = await self._bot.message(new_status_message)
+            self._status_message = await self._bot._text_channel.send(new_status_message)
             await self._bot.stream.set_meta(new_stream_title)
             self._status_protection_count = 0
             log.debug("New status message created")
