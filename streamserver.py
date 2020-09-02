@@ -6,7 +6,7 @@ import shlex
 import subprocess
 import threading
 import time
-from aiohttp import web, errors
+from aiohttp import web, ClientConnectionError
 from contextlib import suppress
 
 import awaitablelock
@@ -137,7 +137,7 @@ class StreamServer:
         self._connections = dict()
 
         ffmpeg_command = 'ffmpeg -loglevel error -y -f s16le -ar {} -ac {} -i {} -f adts -c:a {} -b:a {}k {}' \
-            .format(bot.voice.encoder.sampling_rate, bot.voice.encoder.channels, shlex.quote(self._config['int_pipe']),
+            .format(48000, 2, shlex.quote(self._config['int_pipe']),
                     self._config['aac_encoder'], self._config_bitrate, shlex.quote(self._config['aac_pipe']))
 
         self._aac_thread = None
@@ -202,7 +202,7 @@ class StreamServer:
                 connection.terminate()
             self._connections.clear()
         if self._handler is not None:
-            await self._handler.finish_connections(10)
+            await self._handler.shutdown(10)
         if self._app is not None:
             await self._app.cleanup()
 
@@ -329,7 +329,7 @@ class StreamServer:
         response = web.Response(text=body, headers=self._playlist_response_headers)
         return response
 
-    def _play_audio(self, data):
+    async def _play_audio(self, data):
         self._current_frame = data if len(self._current_frame) == self._frame_len else self._current_frame + data
 
         with self._lock:
@@ -338,17 +338,17 @@ class StreamServer:
                 # send data, if the connection is a new one whole frame (part) must be sent
                 if init:
                     log.debug('Sending initial frame to {}'.format(user))
-                    connection.response.write(self._current_frame)
+                    await connection.response.write(self._current_frame)
                 else:
-                    connection.response.write(data)
+                    await connection.response.write(data)
 
                 # now, if the frame is complete, append the metadata
                 if connection.meta and len(self._current_frame) == self._frame_len:
                     if init or self._meta_changed:
                         log.debug('Sending metadata to {}'.format(user))
-                        connection.response.write(self._current_meta)
+                        await connection.response.write(self._current_meta)
                     else:
-                        connection.response.write(b'\0')
+                        await connection.response.write(b'\0')
 
             if len(self._current_frame) == self._frame_len:
                 # metadata were sent
@@ -386,7 +386,7 @@ class StreamServer:
                 for user, connection in self._connections.items():
                     try:
                         await asyncio.wait_for(connection.response.drain(), 0.001, loop=self._bot.loop)
-                    except (errors.DisconnectedError, asyncio.CancelledError, ConnectionResetError):
+                    except (ClientConnectionError, asyncio.CancelledError, ConnectionResetError):
                         log.debug('Connection broke with {}'.format(user))
                         disconnected.append(user)
                     except asyncio.TimeoutError:
