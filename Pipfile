@@ -16,6 +16,8 @@ trio = "*"
 loguru = "*"
 "discord.py" = {extras = ["voice"], version = "*"}
 trio-asyncio = "*"
+trio-util = "*"
+psycopg2 = "*"
 
 [requires]
 python_version = "3.8"
