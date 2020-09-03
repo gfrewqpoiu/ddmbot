@@ -11,3 +11,8 @@ gen
 *.sqlite*
 .python-version
 *.log*
+database/__pycache__/
+
+commands/__pycache__/
+
+__pycache__/

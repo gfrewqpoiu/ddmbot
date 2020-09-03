@@ -15,8 +15,13 @@ from math import ceil
 
 import discord.utils
 import youtube_dl
+import trio
+import trio_util
+import trio_asyncio
 
 from database.player import UnavailableSongError, PlayerInterface
+
+from loguru import logger
 
 # set up the logger
 log = logging.getLogger('ddmbot.player')
@@ -25,9 +30,12 @@ log = logging.getLogger('ddmbot.player')
 FCNTL_F_LINUX_BASE = 1024
 FCNTL_F_SETPIPE_SZ = FCNTL_F_LINUX_BASE + 7
 
+aio_as_trio = trio_asyncio.aio_as_trio
+
 
 class PcmProcessor(threading.Thread):
     def __init__(self, bot, next_callback):
+        logger.debug("Initializing PCM Processor")
         self._bot = bot
         config = bot.config['ddmbot']
 
@@ -46,10 +54,13 @@ class PcmProcessor(threading.Thread):
         self._frame_period = 20 / 1000.0  # was encoder.frame_length / 1000.0
         self._volume = int(config['default_volume']) / 100
 
+        logger.debug("Creating PCM Pipe")
         self._in_pipe_fd = os.open(config['pcm_pipe'], os.O_RDONLY | os.O_NONBLOCK)
+        logger.debug("Creating internal Pipe")
         self._out_pipe_fd = os.open(config['int_pipe'], os.O_WRONLY | os.O_NONBLOCK)
 
         try:
+
             fcntl.fcntl(self._in_pipe_fd, FCNTL_F_SETPIPE_SZ, pipe_size)
         except OSError as e:
             if e.errno == 1:
@@ -69,6 +80,8 @@ class PcmProcessor(threading.Thread):
         self._volume = min(max(value, 0.0), 2.0)
 
     def stop(self) -> None:
+        """Stops the PCM Processor."""
+        logger.debug("Stopping PCM Processor.")
         self._end.set()
         self.join()
         self.flush()
@@ -77,23 +90,27 @@ class PcmProcessor(threading.Thread):
 
     def flush(self) -> None:
         """Clears out the pipes from all audio data."""
+        logger.debug("Flushing PCM Pipe from all data.")
         try:
             os.read(self._in_pipe_fd, 1048576)
         except OSError as e:
             if e.errno != errno.EAGAIN:
                 raise
 
+    @logger.catch(reraise=True)
     def run(self) -> None:
         """Actually plays the music."""
+        logger.debug("PCM Processor is running.")
         loops = 0  # loop counter
         next_called = True  # variable to prevent constant calling of self._next()
         output_congestion = False  # to control log spam
         buffering_cycles = 0
         cycles_in_second = 1 // self._frame_period
-        zero_data = b'\0' * self._frame_len
+        zero_data = b'\0' * self._frame_len  # 3840 zero bytes
 
         # capture the starting time
         start_time = time.clock_gettime(time.CLOCK_MONOTONIC_RAW)
+        logger.debug(f"Starting play loop at {start_time}")
         while not self._end.is_set():
             # increment loop counter
             loops += 1
@@ -102,13 +119,14 @@ class PcmProcessor(threading.Thread):
 
             # if it's not a buffering cycle read more data
             if buffering_cycles:
+                logger.trace("Buffering")
                 buffering_cycles -= 1
                 data = zero_data
             else:
                 try:
+                    logger.trace("Reading one frame of data.")
                     data = os.read(self._in_pipe_fd, self._frame_len)
                     data_len = len(data)
-
                     if data_len:
                         next_called = False
 
@@ -116,17 +134,19 @@ class PcmProcessor(threading.Thread):
                         if data_len == 0:
                             # if we read nothing, that means the input to the pipe is not connected anymore
                             if not next_called:
+                                logger.trace("Got no data. Going to next song.")
                                 next_called = True
                                 self._next()
                             data = zero_data
                         else:
                             # if we read something, we are likely at the end of the input, pad with zeroes and log
                             # TODO: is there a way to distinguish buffering issues and end of the input issues?
-                            log.debug('PcmProcessor: Data were padded with zeroes')
+                            logger.debug('PcmProcessor: Data was padded with zeroes. End of Song?')
                             data.ljust(self._frame_len, b'\0')
 
                 except OSError as e:
                     if e.errno == errno.EAGAIN:
+                        logger.debug("Got EAGAIN Error while reading data.")
                         data = zero_data
                         log.warning('PcmProcessor: Buffer not ready, waiting one second')
                         buffering_cycles = cycles_in_second
@@ -137,6 +157,7 @@ class PcmProcessor(threading.Thread):
             # This section is responsible for the direct stream.
             if self._bot.stream.is_connected():
                 try:
+                    logger.trace("Sending data to direct stream pipe.")
                     os.write(self._out_pipe_fd, data)
                     # data sent successfully, clear the congestion flag
                     output_congestion = False
@@ -144,7 +165,7 @@ class PcmProcessor(threading.Thread):
                     if e.errno == errno.EAGAIN:
                         # prevent spamming the log with megabytes of text
                         if not output_congestion:
-                            log.error('PcmProcessor: Output pipe not ready, dropping frame(s)')
+                            log.error('PcmProcessor: Output pipe for direct stream not ready, dropping frame(s)')
                             output_congestion = True
                     else:
                         raise
@@ -156,10 +177,11 @@ class PcmProcessor(threading.Thread):
             voice_client = self._bot.voice
             if voice_client.is_connected() and data_len == self._frame_len:
                 if not discord.opus.is_loaded():
-                    raise EnvironmentError("Discord OPUS Library wan't loaded.")
+                    raise EnvironmentError("Discord OPUS Library wasn't loaded.")
                 # adjust the volume
                 data = audioop.mul(data, 2, self._volume)
                 # call the callback
+                logger.trace("Sending full frame of audio data to Discord.")
                 voice_client.send_audio_packet(data)
 
             # calculate next transmission time
@@ -222,9 +244,12 @@ class Player:
     #
     # Resource management wrappers
     #
-    async def init(self):
+    async def init(self, task_status=trio.TASK_STATUS_IGNORED):
+        """Starts the PCM Thread. (TRIO)"""
+        logger.debug("Starting PCM Thread.")
         self._pcm_thread.start()
-        await self._transition_lock.acquire()
+        await aio_as_trio(self._transition_lock.acquire)
+        task_status.started()
 
     async def cleanup(self):
         if self._ffmpeg is not None and self._ffmpeg.poll() is None:

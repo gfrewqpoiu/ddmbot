@@ -10,9 +10,12 @@ from aiohttp import web, ClientConnectionError
 from contextlib import suppress
 
 import awaitablelock
+import trio
+import trio_asyncio
 
 # set up the logger
 log = logging.getLogger('ddmbot.streamserver')
+aio_as_trio = trio_asyncio.aio_as_trio
 
 
 class AacProcessor(threading.Thread):
@@ -179,7 +182,9 @@ class StreamServer:
     #
     # Resource management wrappers
     #
+    @aio_as_trio
     async def init(self):
+        """Starts the webserver for the direct stream."""
         # http server initialization
         self._app = web.Application(loop=self._bot.loop)
         self._app.router.add_route('GET', self._config['stream_path'], self._handle_new_stream)

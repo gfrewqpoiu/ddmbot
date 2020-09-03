@@ -1,10 +1,10 @@
 import discord.ext.commands as dec
 
 import database.song
-from commands.common import *
+from commands.common import privileged
 
 
-class Song:
+class Song(dec.Cog):
     """Song insertion, querying and manipulation"""
     def __init__(self, bot):
         self._bot = bot
@@ -60,45 +60,45 @@ class Song:
         'all the listings.'
     }
 
-    @dec.group(invoke_without_command=True, aliases=['s'], help=_help_messages['group'])
-    async def song(self, subcommand: str, *arguments: str):
+    @dec.group(invoke_without_command=True, aliases=['so'], help=_help_messages['group'])
+    async def song(self, ctx, subcommand: str, *arguments: str):
         raise dec.UserInputError('Command *song* has no subcommand named {}. Please use `{}help song` to list all '
                                  'the available subcommands.'
                                  .format(subcommand, self._bot.config['ddmbot']['delimiter']))
 
     @privileged
     @song.command(ignore_extra=False, help=_help_messages['blacklist'])
-    async def blacklist(self, song_id: int):
+    async def blacklist(self, ctx, song_id: int):
         await self._db.blacklist(song_id)
-        await self._bot.message('Song [{}] has been blacklisted'.format(song_id))
+        await ctx.send('Song [{}] has been blacklisted'.format(song_id))
 
     @privileged
     @song.command(ignore_extra=False, help=_help_messages['deduplicate'])
-    async def deduplicate(self, which_id: int, target_id: int):
+    async def deduplicate(self, ctx, which_id: int, target_id: int):
         await self._db.merge(which_id, target_id)
-        await self._bot.message('Song [{}] has been marked as a duplicate of the song [{}]'.format(which_id, target_id))
+        await ctx.send('Song [{}] has been marked as a duplicate of the song [{}]'.format(which_id, target_id))
 
     @song.group(ignore_extra=False, invoke_without_command=True)
-    async def failed(self):
+    async def failed(self, ctx):
         raise dec.UserInputError('You need to provide a subcommand to the *song failed* command')
 
     @privileged
     @failed.command(name='clear', ignore_extra=False, help=_help_messages['failed_clear'])
-    async def failed_clear(self, song_id: int = None):
+    async def failed_clear(self, ctx, song_id: int = None):
         raise dec.UserInputError('You need to provide a subcommand to the *song failed* command')
 
     @failed.command(name='list', ignore_extra=False, aliases=['l'], help=_help_messages['failed_list'])
-    async def failed_list(self):
+    async def failed_list(self, ctx):
         items, total = await self._db.list_failed(20)
         if not items:
-            await self._bot.whisper('There are no songs flagged because of a download failure')
+            await ctx.author.send('There are no songs flagged because of a download failure')
             return
         reply = '**{} songs (out of {}) flagged because of a download failure:**\n **>** '.format(len(items), total) + \
                 '\n **>** '.join(['[{}] {}'.format(*item) for item in items])
-        await self._bot.whisper(reply)
+        await ctx.author.send(reply)
 
     @song.command(ignore_extra=False, aliases=['i'], help=_help_messages['info'])
-    async def info(self, song_id: int):
+    async def info(self, ctx, song_id: int):
         info = await self._db.get_info(song_id)
         reply = '**Song [{id}] information:**\n' \
                 '    **Source URL:** [{url}]\n' \
@@ -112,32 +112,32 @@ class Song:
                 '    **Has failed to download:** {has_failed}\n\n' \
                 '    **Marked as a duplicate of:** {duplicates}\n' \
                 '    **Is duplicated by:** {duplicated_by}'.format_map(info)
-        await self._bot.whisper(reply)
+        await ctx.author.send(reply)
 
     @privileged
     @song.command(ignore_extra=False, help=_help_messages['permit'])
-    async def permit(self, song_id: int):
+    async def permit(self, ctx, song_id: int):
         await self._db.permit(song_id)
-        await self._bot.message('Song [{}] has been removed from blacklist'.format(song_id))
+        await ctx.send('Song [{}] has been removed from blacklist'.format(song_id))
 
     @privileged
     @song.command(ignore_extra=False, help=_help_messages['rename'])
-    async def rename(self, song_id: int, new_title: str):
+    async def rename(self, ctx, song_id: int, new_title: str):
         await self._db.rename(song_id, new_title)
-        await self._bot.message('Song [{}] has been renamed to "{}"'.format(song_id, new_title))
+        await ctx.send('Song [{}] has been renamed to "{}"'.format(song_id, new_title))
 
     @song.command(ignore_extra=False, aliases=['s'], help=_help_messages['search'])
-    async def search(self, *keywords: str):
+    async def search(self, ctx, *keywords: str):
         items, total = await self._db.search(keywords, 20)
         if not items:
-            await self._bot.whisper('Search for songs with keywords {} has not returned any result'.format(keywords))
+            await ctx.author.send('Search for songs with keywords {} has not returned any result'.format(keywords))
             return
         reply = '**{} songs (out of {}) matching the keywords {}:**\n **>** '.format(len(items), total, keywords) + \
                 '\n **>** '.join(['[{}] {}'.format(*item) for item in items])
-        await self._bot.whisper(reply)
+        await ctx.author.send(reply)
 
     @privileged
     @song.command(ignore_extra=False, help=_help_messages['split'])
-    async def split(self, song_id: int):
+    async def split(self, ctx, song_id: int):
         await self._db.merge(song_id, song_id)
-        await self._bot.message('Song [{}] has been marked as unique'.format(song_id))
+        await ctx.send('Song [{}] has been marked as unique'.format(song_id))

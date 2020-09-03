@@ -1,15 +1,21 @@
 import functools
 import logging
 import re
+from asyncio import AbstractEventLoop
 
 import peewee
 import youtube_dl
+from playhouse.pool import PostgresqlExtDatabase
+from typing import Any, Callable, Optional, Union
 
 # set up the logger
 log = logging.getLogger('ddmbot.database')
+peewee = peewee
 
 # database object
-_database = peewee.SqliteDatabase(None, pragmas=[('journal_mode', 'WAL'), ('foreign_keys', 'ON')])
+# TODO: This doesn't work with Deferred Foreign Keys. Switch to PooledPostgres.
+# _database = peewee.SqliteDatabase(None, pragmas=[('journal_mode', 'WAL'), ('foreign_keys', 'ON')])
+_database = PostgresqlExtDatabase(None)
 
 
 class DdmBotSchema(peewee.Model):
@@ -48,10 +54,10 @@ class Song(DdmBotSchema):
     # song may be duplicated using multiple sources
     duplicate = peewee.ForeignKeyField('self', null=True)
 
-
+#  TODO: This no longer works in Peewee 3.0.
 # we will need this to resolve a foreign key loop
-DeferredUser = peewee.DeferredRelation()
-DeferredLink = peewee.DeferredRelation()
+# DeferredUser = peewee.DeferredRelation()
+# DeferredLink = peewee.DeferredRelation()
 
 
 # Table for storing playlists, as many as user wants
@@ -59,11 +65,11 @@ class Playlist(DdmBotSchema):
     id = peewee.PrimaryKeyField()
 
     # playlist is owned by a user
-    user = peewee.ForeignKeyField(DeferredUser)
+    user = peewee.DeferredForeignKey('User', null=False)
     # for an identifier, we choose a "nice enough" name
     name = peewee.CharField()
     # the first song of the playlist
-    head = peewee.ForeignKeyField(DeferredLink, null=True, default=None)
+    head = peewee.DeferredForeignKey('Link', null=True, default=None)
     # playlist may be set to repeat itself, this is default except to implicit one
     repeat = peewee.BooleanField(default=True)
 
@@ -80,8 +86,6 @@ class Link(DdmBotSchema):
     song = peewee.ForeignKeyField(Song)
     next = peewee.ForeignKeyField('self', null=True)
 
-DeferredLink.set_model(Link)
-
 
 # Finally, table for storing information about users
 class User(DdmBotSchema):
@@ -96,19 +100,17 @@ class User(DdmBotSchema):
     # for checking if the user should be ignored by the ddmbot
     is_ignored = peewee.BooleanField(default=False)
 
-DeferredUser.set_model(User)
 
-
-# Model to retrieve failed foreign key constrains
-class ForeignKeyCheckModel(DdmBotSchema):
-    table = peewee.CharField()
-    rowid = peewee.BigIntegerField()
-    parent = peewee.CharField()
-    fkid = peewee.IntegerField()
+# # Model to retrieve failed foreign key constrains
+# class ForeignKeyCheckModel(DdmBotSchema):
+#     table = peewee.CharField()
+#     rowid = peewee.BigIntegerField()
+#     parent = peewee.CharField()
+#     fkid = peewee.IntegerField()
 
 
 class DBInterface:
-    def __init__(self, loop):
+    def __init__(self, loop: AbstractEventLoop):
         if _database.is_closed():
             raise RuntimeError('Database must be initialized and opened before instantiating interfaces')
         self._loop = loop
@@ -116,7 +118,8 @@ class DBInterface:
 
 
 # decorator for DBInterface methods
-def in_executor(method):
+def in_executor(method: Callable[..., Any]) -> Any:
+    """Runs the given method in it's own loop worker thread pool."""
     def wrapped_method(self, *args, **kwargs):
         func = functools.partial(method, self, *args, **kwargs)
         return self._loop.run_in_executor(None, func)
@@ -144,11 +147,11 @@ class DBSongUtil:
         return DBSongUtil._url_base[uuri_parts[0]].format(*uuri_parts[1:])
 
     @staticmethod
-    def _is_list(input_url):
+    def _is_list(input_url) -> bool:
         return DBSongUtil._list_regex.match(input_url) is not None
 
     @staticmethod
-    def _make_uuri(song_url):
+    def _make_uuri(song_url: str) -> Optional[str]:
         # makes unique URI from URLs suitable for database storage
         # method will return URI in one of the following formats:
         #   yt:<youtube_id> for youtube video
@@ -170,7 +173,7 @@ class DBPlaylistUtil:
     _playlist_regex = re.compile(r'^[a-zA-Z0-9_-]{1,32}$')
 
     @staticmethod
-    def _get_playlist(user_id, playlist_name):
+    def _get_playlist(user_id: int, playlist_name: str) -> Playlist:
         try:
             playlist = Playlist.select().where(Playlist.user == user_id, Playlist.name == playlist_name).get()
         except Playlist.DoesNotExist as e:
@@ -205,23 +208,35 @@ class DBPlaylistUtil:
 #
 # Integrity check is performed.
 #
-def initialize(filename):
-        if not _database.is_closed():
-            raise RuntimeError('Database is opened already')
+def initialize(db_name: str) -> None:
+    if not _database.is_closed():
+        raise RuntimeError('Database is opened already')
 
-        _database.init(filename)
+    _database.init(db_name)
+    _database.connect()
+    _database.create_tables([CreditTimestamp, Song, Playlist, Link, User], safe=True)
+    try:
+        Playlist._schema.create_foreign_key(Playlist.user)
+    except peewee.ProgrammingError:
+        _database.close()
         _database.connect()
-        _database.create_tables([CreditTimestamp, Song, Playlist, Link, User], safe=True)
 
-        # check for the failed foreign key constrains
-        failed_query = ForeignKeyCheckModel.raw('PRAGMA foreign_key_check;')
-        if len(failed_query.execute()):
-            _database.close()
-            raise RuntimeError('Foreign key constrains check failed, database is corrupted and needs to be fixed')
+    try:
+        Playlist._schema.create_foreign_key(Playlist.head)
+    except peewee.ProgrammingError:
+        _database.close()
+        _database.connect()
+
+    # No longer needed when switching to Postgresql.
+    # # check for the failed foreign key constrains
+    # failed_query = ForeignKeyCheckModel.raw('PRAGMA foreign_key_check;')
+    # if len(failed_query.execute()):
+    #     _database.close()
+    #     raise RuntimeError('Foreign key constraints check failed, database is corrupted and needs to be fixed')
 
 
 #
 # Function taking care of properly closing database
 #
-def close():
-        _database.close()
+def close() -> None:
+    _database.close()

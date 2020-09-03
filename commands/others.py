@@ -1,7 +1,7 @@
 import discord.ext.commands as dec
 
 
-class Others:
+class Others(dec.Cog):
     """Commands that don't fit anywhere else"""
     def __init__(self, bot):
         self._bot = bot
@@ -36,26 +36,26 @@ class Others:
         'You can use this command to take back the skip vote you issued earlier.'
     }
 
-    @dec.command(pass_context=True, ignore_extra=False, aliases=['d'], help=_help_messages['direct'])
+    @dec.command(ignore_extra=False, aliases=['d'], help=_help_messages['direct'])
     async def direct(self, ctx):
-        token = await self._bot.users.generate_token(int(ctx.message.author.id))
-        await self._bot.whisper(self._direct_stream_message.format(token, token))
+        token = await self._bot.users.generate_token(ctx.author.id)
+        await ctx.author.send(self._direct_stream_message.format(token, token))
 
-    @dec.command(pass_context=True, ignore_extra=False, aliases=['j'], help=_help_messages['join'])
+    @dec.command(ignore_extra=False, aliases=['j'], help=_help_messages['join'])
     async def join(self, ctx):
         if self._bot.player.streaming or self._bot.player.stopped:
             raise dec.UserInputError('Player is not in the DJ mode')
-        await self._bot.users.join_queue(int(ctx.message.author.id))
+        await self._bot.users.join_queue(ctx.author.id)
 
-    @dec.command(pass_context=True, ignore_extra=False, aliases=['l'], help=_help_messages['leave'])
+    @dec.command(ignore_extra=False, aliases=['l'], help=_help_messages['leave'])
     async def leave(self, ctx):
-        await self._bot.users.leave_queue(int(ctx.message.author.id))
+        await self._bot.users.leave_queue(ctx.author.id)
 
-    @dec.command(pass_context=True, ignore_extra=False, help=_help_messages['skip'])
+    @dec.command(ignore_extra=False, help=_help_messages['skip'])
     async def skip(self, ctx, force: str = None):
         # if the skip is forced, check the privilege and do it
         if force and force.lower() in ['f', 'force']:
-            if not self._bot.is_operator(ctx.message.author):
+            if not self._bot.is_operator(ctx.author):
                 raise dec.CommandError('You don\'t have a permission to force the skip')
             await self._bot.player.force_skip()
             await self._bot.message('Skip forced by {}'.format(ctx.message.author.mention))
@@ -66,9 +66,9 @@ class Others:
             raise dec.UserInputError('*force* is the only argument allowed for the *skip* command')
 
         # now do the "normal voting"
-        await self._bot.player.skip_vote(int(ctx.message.author.id))
-        await self._bot.log('User {} has voted to skip'.format(ctx.message.author))
+        await self._bot.player.skip_vote(ctx.author.id)
+        await self._bot.log('User {} has voted to skip'.format(ctx.author))
 
-    @dec.command(pass_context=True, ignore_extra=False, help=_help_messages['unskip'])
+    @dec.command(ignore_extra=False, help=_help_messages['unskip'])
     async def unskip(self, ctx):
-        await self._bot.player.skip_unvote(int(ctx.message.author.id))
+        await self._bot.player.skip_unvote(ctx.author.id)

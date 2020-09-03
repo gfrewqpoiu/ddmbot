@@ -37,8 +37,8 @@ class CommandHandler:
     #
     def _command_check(self, ctx):
         # if the channel is not private, delete the command immediately regardless of the response
-        if not isinstance(ctx.message.channel, discord.PrivateChannel):
-            self._bot.loop.create_task(self._bot.client.delete_message(ctx.message))
+        if not isinstance(ctx.message.channel, discord.DMChannel):
+            self._bot.loop.create_task(ctx.message.delete())
 
         # if privileged, check the member role
         if hasattr(ctx.command, 'privileged'):
@@ -50,25 +50,25 @@ class CommandHandler:
     #
     # Listeners
     #
-    async def _on_command_error(self, exception, ctx):
+    async def _on_command_error(self, ctx, exception):
         # non-existing commands won't trigger check thus are not deleted
-        if isinstance(exception, dec.CommandNotFound) and not isinstance(ctx.message.channel, discord.PrivateChannel):
-            await self._bot.client.delete_message(ctx.message)
+        if isinstance(exception, dec.CommandNotFound) and not isinstance(ctx.message.channel, discord.DMChannel):
+            await ctx.message.delete()
 
         # get a cause if the exception was thrown inside the command routine
         if isinstance(exception, dec.CommandInvokeError):
             exception = exception.__cause__
 
         # now inform the author of the command on the failure using PMs
-        await self._bot.client.send_message(ctx.message.author, str(exception))
+        await ctx.author.send(str(exception))
 
         # log the error for debugging purposes
         log.debug('Command \'{}\' invoked by {} raised an exception\n{}'
                   .format(ctx.command, ctx.message.author, ctx.message.content), exc_info=exception)
 
-    async def _on_command_completion(self, command, ctx):
+    async def _on_command_completion(self, ctx):
         # figure out the argument start, it is <self> <context> <args>...
-        arg_start = 2 if ctx.command.pass_context else 1
+        arg_start = 2
 
         # log the usage of all privileged commands
         if hasattr(ctx.command, 'privileged'):

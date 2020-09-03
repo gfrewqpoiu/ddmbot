@@ -2,10 +2,12 @@ import discord.ext.commands as dec
 import discord
 
 import database.user
-from commands.common import *
+from commands.common import privileged
+
+Member = discord.Member
 
 
-class User:
+class User(dec.Cog):
     """User blacklisting, moving, and querying information"""
     def __init__(self, bot):
         self._bot = bot
@@ -35,28 +37,28 @@ class User:
     }
 
     @dec.group(invoke_without_command=True, aliases=['u'], help=_help_messages['group'])
-    async def user(self, subcommand: str, *arguments: str):
+    async def user(self, ctx, subcommand: str, *arguments: str):
         raise dec.UserInputError('Command *user* has no subcommand named {}. Please use `{}help user` to list all '
                                  'the available subcommands.'
                                  .format(subcommand, self._bot.config['ddmbot']['delimiter']))
 
     @privileged
     @user.command(ignore_extra=False, help=_help_messages['grace'])
-    async def grace(self, user: discord.Member):
-        await self._db.grace(int(user.id))
-        await self._bot.message('User {} successfully removed from the ignore list'.format(user))
+    async def grace(self, ctx, user: discord.Member):
+        await self._db.grace(user.id)
+        await ctx.send('User {} successfully removed from the ignore list'.format(user))
 
     @privileged
     @user.command(ignore_extra=False, help=_help_messages['ignore'])
-    async def ignore(self, user: discord.User):
+    async def ignore(self, ctx, user: discord.Member):
         if self._bot.is_operator(user):
             raise dec.UserInputError('User {} is an operator and cannot be ignored'.format(user))
 
         await self._db.ignore(int(user.id))
-        await self._bot.message('User {} has been added to the ignore list'.format(user))
+        await ctx.send('User {} has been added to the ignore list'.format(user))
 
-    @user.command(pass_context=True, ignore_extra=False, aliases=['i'], help=_help_messages['info'])
-    async def info(self, ctx, user: discord.User = None):
+    @user.command(ignore_extra=False, aliases=['i'], help=_help_messages['info'])
+    async def info(self, ctx, user: discord.Member = None):
         info = await self._db.info(int(user.id if user is not None else ctx.message.author.id))
 
         reply = 'Statistics for the user {}:\n  {} song(s) in {} playlist(s)\n  Played {} time(s) from the DJ queue\n' \
@@ -65,27 +67,27 @@ class User:
         if info['ignored']:
             reply += "\n\nUser is ignored by the bot."
 
-        await self._bot.whisper(reply)
+        await ctx.author.send(reply)
 
     @privileged
     @user.command(ignore_extra=False, aliases=['m'], help=_help_messages['move'])
-    async def move(self, user: discord.User, position: int):
+    async def move(self, ctx, user: discord.Member, position: int):
         if self._bot.player.streaming or self._bot.player.stopped:
             raise dec.UserInputError('Player is not in the DJ mode')
 
-        inserted, position = await self._bot.users.move_listener(int(user.id), position)
+        inserted, position = await self._bot.users.move_listener(user.id, position)
         if inserted:
-            await self._bot.message('User {} was added to the DJ queue to the {} position'
-                                    .format(user, self._ordinal(position)))
+            await ctx.send('User {} was added to the DJ queue to the {} position'
+                           .format(user, self._ordinal(position)))
         else:
-            await self._bot.message('User {} was moved to the {} position in the DJ queue'
-                                    .format(user, self._ordinal(position)))
+            await ctx.send('User {} was moved to the {} position in the DJ queue'
+                           .format(user, self._ordinal(position)))
 
     @privileged
     @user.command(ignore_extra=False, aliases=['k'], help=_help_messages['kick'])
-    async def kick(self, user: discord.Member):
+    async def kick(self, ctx, user: discord.Member):
         await self._bot.users.leave_queue(int(user.id))
-        await self._bot.message('User {} was removed from the DJ queue'.format(user))
+        await ctx.send('User {} was removed from the DJ queue'.format(user))
 
     @staticmethod
     def _ordinal(n):

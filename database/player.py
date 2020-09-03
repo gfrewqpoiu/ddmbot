@@ -154,7 +154,7 @@ class PlayerInterface(DBInterface, DBSongUtil):
         query = Song.select(Song).where(
             Song.last_played < reference_time,  # overplay protection interval
             Song.listener_count >= self._config_ap_threshold,  # listener threshold
-            Song.skip_vote_count < peewee.Passthrough(self._config_ap_ratio) * Song.listener_count,  # skip ratio
+            Song.skip_vote_count < (self._config_ap_ratio * Song.listener_count),  # skip ratio
             Song.duration <= self._config_max_duration,  # song duration
             Song.credit_count > 0,  # overplay protection
             ~Song.is_blacklisted,  # cannot be blacklisted

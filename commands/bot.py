@@ -1,9 +1,10 @@
 import discord.ext.commands as dec
 
-from commands.common import *
+from commands.common import privileged
+from trio_asyncio import trio_as_aio
 
 
-class Bot:
+class Bot(dec.Cog):
     """Bot controls (player modes, status, title, volume)"""
     def __init__(self, bot):
         self._bot = bot
@@ -51,46 +52,46 @@ class Bot:
                                  .format(subcommand, self._bot.config['ddmbot']['delimiter']))
 
     @privileged
-    @bot.command(ignore_extra=False, help=_help_messages['djmode'])
-    async def djmode(self):
+    @dec.command(ignore_extra=False, help=_help_messages['djmode'])
+    async def djmode(self, ctx):
         await self._bot.player.set_djmode()
 
     @privileged
-    @bot.command(ignore_extra=False, help=_help_messages['restart'])
-    async def restart(self):
+    @dec.command(ignore_extra=False, help=_help_messages['restart'])
+    async def restart(self, ctx):
         await self._bot.message('Restarting...')
-        self._bot.loop.create_task(self._bot.restart())
+        await self._bot.restart()
 
     @privileged
-    @bot.command(ignore_extra=False, help=_help_messages['shutdown'])
-    async def shutdown(self):
+    @dec.command(ignore_extra=False, help=_help_messages['shutdown'])
+    async def shutdown(self, ctx):
         await self._bot.message('Shutting down...')
-        self._bot.loop.create_task(self._bot.shutdown())
+        await self._bot.shutdown()
 
-    @bot.command(ignore_extra=False, aliases=['s'], help=_help_messages['status'])
-    async def status(self):
+    @dec.command(ignore_extra=False, aliases=['s'], help=_help_messages['status'])
+    async def status(self, ctx):
         await self._bot.player.reprint_status()
 
     @privileged
-    @bot.command(ignore_extra=False, help=_help_messages['stop'])
-    async def stop(self):
+    @dec.command(ignore_extra=False, help=_help_messages['stop'])
+    async def stop(self, ctx):
         await self._bot.player.set_stop()
 
     @privileged
-    @bot.command(ignore_extra=False, help=_help_messages['stream'])
-    async def stream(self, url: str, name: str = None):
+    @dec.command(ignore_extra=False, help=_help_messages['stream'])
+    async def stream(self, ctx, url: str, name: str = None):
         await self._bot.player.set_stream(url, name)
 
     @privileged
-    @bot.command(ignore_extra=False, aliases=['t'], help=_help_messages['title'])
-    async def title(self, name: str = None):
+    @dec.command(ignore_extra=False, aliases=['t'], help=_help_messages['title'])
+    async def title(self, ctx, name: str = None):
         await self._bot.player.set_stream_title(name)
 
     @privileged
-    @bot.command(ignore_extra=False, help=_help_messages['volume'])
-    async def volume(self, volume: int = None):
+    @dec.command(ignore_extra=False, help=_help_messages['volume'])
+    async def volume(self, ctx, volume: int = None):
         if volume is not None:
             self._bot.player.volume = volume / 100
             await self._bot.message('Player volume set to {}%'.format(int(self._bot.player.volume * 100)))
         else:
-            await self._bot.message('Player volume: {}%'.format(int(self._bot.player.volume * 100)))
+            await ctx.send('Player volume: {}%'.format(int(self._bot.player.volume * 100)))
