@@ -18,6 +18,10 @@ loguru = "*"
 trio-asyncio = "*"
 trio-util = "*"
 psycopg2 = "*"
+tractor = {editable = true, git = "git://github.com/goodboy/tractor.git"}
 
 [requires]
 python_version = "3.8"
+
+[pipenv]
+allow_prereleases = true

@@ -7,6 +7,7 @@ import os
 import time
 import trio
 import trio_asyncio
+import tractor
 import sys
 from typing import NoReturn, Awaitable, Optional
 from aiohttp import ClientConnectionError
@@ -25,6 +26,7 @@ import helpformatter
 import player
 import streamserver
 import usermanager
+import pcm_processor
 
 # set up a logger
 logging.Formatter.converter = time.gmtime
@@ -125,11 +127,12 @@ class DdmBot:
     @logger.catch(reraise=True)
     async def run(self):
         """Actually starts the bot."""
-        async with trio.open_nursery() as outer_nursery:
+        async with tractor.open_nursery() as outer_nursery:
             try:
                 self._database = database.bot.BotInterface(self._loop, self._config['ddmbot'])
                 self._stream = streamserver.StreamServer(self)
-                self._player = player.Player(self)
+                portal = await outer_nursery.start_actor('PCM', rpc_module_paths=['pcm_processor'])
+                self._player = player.Player(self, portal)
                 self._users = usermanager.UserManager(self)
             except BaseException:
                 await aio_as_trio(self._client.close())
@@ -139,7 +142,7 @@ class DdmBot:
                 # First we login.
                 await aio_as_trio(self._client.login)(self._config['discord']['token'])
                 # Now we start the PCM Player thread
-                await outer_nursery.start(self._player.init)
+                await outer_nursery.start(self._player.init, outer_nursery)
                 # Now we start the webserver for the direct stream.
                 outer_nursery.start_soon(self._stream.init)
 
@@ -167,7 +170,7 @@ class DdmBot:
                 for task in pending:
                     task.cancel()
                     # TODO: Check what other error can be supressed.
-                    with suppress(asyncio.CancelledError, asyncio.TimeoutError, OSError):
+                    with suppress(asyncio.CancelledError, asyncio.TimeoutError, OSError, AssertionError):
                         await aio_as_trio(task)
 
     @trio_as_aio
@@ -463,4 +466,4 @@ if __name__ == '__main__':
     logger.add(sys.stderr, backtrace=True, colorize=True, diagnose=True, level='DEBUG')
     logger.add(arguments.log_file, rotation="00:00", retention="1 week", backtrace=True, diagnose=True, level='TRACE')
 
-    trio.run(main)
+    tractor.run(main)
